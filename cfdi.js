@@ -73,26 +73,82 @@ async function cruzar() {
         const facturas     = buildIndex(infoFacturas, "I");
         const complementos = buildIndex(infoComplementos, "P");
 
-        let html = "";
+        const COLS = [
+            { idx: 1, label: "Estado" },
+            { idx: 2, label: "Factura" },
+            { idx: 3, label: "Complemento" },
+            { idx: 4, label: "UUID" },
+            { idx: 5, label: "Fecha factura" },
+            { idx: 6, label: "Total" },
+            { idx: 7, label: "Fecha pago" },
+            { idx: 8, label: "Importe pagado" },
+        ];
+
+        let rows = "";
         for (const [uuid, factura] of Object.entries(facturas)) {
             const complemento = complementos[uuid];
             if (complemento) {
-                html += `
-                    <div class="match ok">
-                        <p>✓ Factura: <strong>${factura.archivo}</strong>  |  Complemento: <strong>${complemento.archivo}</strong></p>
-                        <p>UUID: ${uuid}</p>
-                        <p>Fecha factura: ${factura.fecha?.slice(0,10)}  |  Total: $${factura.total}</p>
-                        <p>Fecha pago: ${complemento.fecha?.slice(0,10)}  |  Importe pagado: $${complemento.imp_pagado}</p>
-                    </div>`;
+                rows += `
+                    <tr class="row-ok">
+                        <td class="estado-ok">✓</td>
+                        <td>${factura.archivo}</td>
+                        <td>${complemento.archivo}</td>
+                        <td class="uuid" >${uuid}</td>
+                        <td>${factura.fecha?.slice(0,10)}</td>
+                        <td>$${factura.total}</td>
+                        <td>${complemento.fecha?.slice(0,10)}</td>
+                        <td>$${complemento.imp_pagado}</td>
+                    </tr>`;
             } else {
-                html += `
-                    <div class="match error">
-                        <p>✗ Factura: <strong>${factura.archivo}</strong> → SIN complemento de pago</p>
-                        <p>UUID: ${uuid}</p>
-                    </div>`;
+                rows += `
+                    <tr class="row-error">
+                        <td class="estado-error">✗</td>
+                        <td>${factura.archivo}</td>
+                        <td class="sin-match">Sin complemento</td>
+                        <td class="uuid" >${uuid}</td>
+                        <td>${factura.fecha?.slice(0,10)}</td>
+                        <td>$${factura.total}</td>
+                        <td class="sin-match">—</td>
+                        <td class="sin-match">—</td>
+                    </tr>`;
             }
         }
-        resultado.innerHTML = html;
+        const togglesHtml = COLS.map(c =>
+            `<label>
+                <input type="checkbox" checked data-col="${c.idx}">
+                ${c.label}
+            </label>`
+        ).join("");
+
+        resultado.innerHTML = `
+            <details id="col-toggles" open>
+                <summary>Columnas visibles</summary>
+                <div>${togglesHtml}</div>
+            </details>
+            <figure>
+                <table id="tabla-resultado">
+                    <thead>
+                        <tr>
+                            <th></th>
+                            <th>Factura</th>
+                            <th>Complemento</th>
+                            <th>UUID</th>
+                            <th>Fecha factura</th>
+                            <th>Total</th>
+                            <th>Fecha pago</th>
+                            <th>Importe pagado</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </figure>`;
+
+        document.querySelectorAll("#col-toggles input[data-col]").forEach(cb => {
+            cb.addEventListener("change", () => {
+                document.getElementById("tabla-resultado")
+                    .classList.toggle(`hide-col-${cb.dataset.col}`, !cb.checked);
+            });
+        });
 
     } catch (e) {
         resultado.innerHTML = `<p class="error">Error: ${e.message}</p>`;
