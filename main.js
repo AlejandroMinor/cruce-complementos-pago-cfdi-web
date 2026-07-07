@@ -4,48 +4,96 @@ const NS = {
     pago20: "http://www.sat.gob.mx/Pagos20",
 };
 
-function getNode(doc, tag, ns) {
-    return doc.getElementsByTagNameNS(ns, tag)[0] || null;
+const TOLERANCIA = 0.01;
+
+const fmtMoneda = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
+
+function esc(s) {
+    return String(s ?? "").replace(/[&<>"']/g, c => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
 }
 
 function getXmlInfo(filename, xmlText) {
     const parser = new DOMParser();
     const doc = parser.parseFromString(xmlText, "application/xml");
 
+    if (doc.getElementsByTagName("parsererror").length) {
+        return { archivo: filename, error: "XML inválido" };
+    }
+
     const comprobante = doc.documentElement;
-    const timbre      = getNode(doc, "TimbreFiscalDigital", NS.tfd);
+    const timbre      = doc.getElementsByTagNameNS(NS.tfd, "TimbreFiscalDigital")[0];
 
     const info = {
         archivo: filename,
         uuid:    timbre?.getAttribute("UUID")?.toUpperCase() ?? null,
         tipo:    comprobante.getAttribute("TipoDeComprobante"),
         fecha:   comprobante.getAttribute("Fecha"),
-        total:   comprobante.getAttribute("Total"),
-        doc_relacionado: null,
-        imp_pagado:      null,
+        total:   Number(comprobante.getAttribute("Total")),
+        pagos:   [],
     };
 
     if (info.tipo === "P") {
-        const doc_rel = getNode(doc, "DoctoRelacionado", NS.pago20);
-        if (doc_rel) {
-            info.doc_relacionado = doc_rel.getAttribute("IdDocumento")?.toUpperCase() ?? null;
-            info.imp_pagado      = doc_rel.getAttribute("ImpPagado");
+        for (const pago of doc.getElementsByTagNameNS(NS.pago20, "Pago")) {
+            const fechaPago = pago.getAttribute("FechaPago");
+            for (const docRel of pago.getElementsByTagNameNS(NS.pago20, "DoctoRelacionado")) {
+                info.pagos.push({
+                    uuid_rel:   docRel.getAttribute("IdDocumento")?.toUpperCase() ?? null,
+                    imp_pagado: Number(docRel.getAttribute("ImpPagado")),
+                    fecha_pago: fechaPago,
+                });
+            }
         }
     }
 
     return info;
 }
 
-function buildIndex(infos, tipo) {
-    const index = {};
+function indexarFacturas(infos, avisos) {
+    const facturas = new Map();
     for (const info of infos) {
-        if (info.tipo !== tipo) {
-            throw new Error(`'${info.archivo}' no es de tipo '${tipo}'.`);
+        if (info.error) {
+            avisos.push(`'${info.archivo}': ${info.error}, se omitió.`);
+        } else if (info.tipo !== "I") {
+            avisos.push(`'${info.archivo}' no es tipo I (Ingreso), se omitió.`);
+        } else if (!info.uuid) {
+            avisos.push(`'${info.archivo}' no tiene UUID de timbrado, se omitió.`);
+        } else if (facturas.has(info.uuid)) {
+            avisos.push(`'${info.archivo}' tiene el mismo UUID que '${facturas.get(info.uuid).archivo}', se omitió.`);
+        } else {
+            facturas.set(info.uuid, info);
         }
-        const clave = tipo === "I" ? info.uuid : info.doc_relacionado;
-        index[clave] = info;
     }
-    return index;
+    return facturas;
+}
+
+function indexarPagos(infos, avisos) {
+    const pagosPorFactura = new Map();
+    for (const info of infos) {
+        if (info.error) {
+            avisos.push(`'${info.archivo}': ${info.error}, se omitió.`);
+            continue;
+        }
+        if (info.tipo !== "P") {
+            avisos.push(`'${info.archivo}' no es tipo P (Pago), se omitió.`);
+            continue;
+        }
+        if (!info.pagos.length) {
+            avisos.push(`'${info.archivo}' no tiene documentos relacionados, se omitió.`);
+            continue;
+        }
+        for (const p of info.pagos) {
+            if (!p.uuid_rel) {
+                avisos.push(`'${info.archivo}' tiene un documento relacionado sin IdDocumento, se omitió ese pago.`);
+                continue;
+            }
+            const lista = pagosPorFactura.get(p.uuid_rel) ?? [];
+            lista.push({ ...p, archivo: info.archivo });
+            pagosPorFactura.set(p.uuid_rel, lista);
+        }
+    }
+    return pagosPorFactura;
 }
 
 function leerArchivos(files) {
@@ -53,6 +101,17 @@ function leerArchivos(files) {
         file.text().then(text => getXmlInfo(file.name, text))
     ));
 }
+
+const COLS = [
+    { key: "estado",      label: "Estado" },
+    { key: "factura",     label: "Factura" },
+    { key: "complemento", label: "Complementos" },
+    { key: "uuid",        label: "UUID" },
+    { key: "ffactura",    label: "Fecha factura" },
+    { key: "total",       label: "Total" },
+    { key: "fpago",       label: "Fecha pago" },
+    { key: "importe",     label: "Importe pagado" },
+];
 
 async function cruzar() {
     const resultado = document.getElementById("resultado");
@@ -67,69 +126,103 @@ async function cruzar() {
     }
 
     try {
-        const infoFacturas     = await leerArchivos(filesFacturas);
-        const infoComplementos = await leerArchivos(filesComplementos);
-
-        const facturas     = buildIndex(infoFacturas, "I");
-        const complementos = buildIndex(infoComplementos, "P");
-
-        const COLS = [
-            { idx: 1, label: "Estado" },
-            { idx: 2, label: "Factura" },
-            { idx: 3, label: "Complemento" },
-            { idx: 4, label: "UUID" },
-            { idx: 5, label: "Fecha factura" },
-            { idx: 6, label: "Total" },
-            { idx: 7, label: "Fecha pago" },
-            { idx: 8, label: "Importe pagado" },
-        ];
+        const avisos = [];
+        const facturas        = indexarFacturas(await leerArchivos(filesFacturas), avisos);
+        const pagosPorFactura = indexarPagos(await leerArchivos(filesComplementos), avisos);
 
         let rows = "";
-        let conComplemento = 0;
-        const totalFacturas = Object.keys(facturas).length;
-        for (const [uuid, factura] of Object.entries(facturas)) {
-            const complemento = complementos[uuid];
-            if (complemento) {
-                conComplemento++;
-                rows += `
-                    <tr>
-                        <td><span class="badge badge-ok">✓ Pagada</span></td>
-                        <td>${factura.archivo}</td>
-                        <td>${complemento.archivo}</td>
-                        <td class="uuid" title="${uuid}">${uuid}</td>
-                        <td class="num">${factura.fecha?.slice(0,10)}</td>
-                        <td class="num">$${factura.total}</td>
-                        <td class="num">${complemento.fecha?.slice(0,10)}</td>
-                        <td class="num">$${complemento.imp_pagado}</td>
-                    </tr>`;
+        let pagadas = 0, parciales = 0;
+        for (const [uuid, factura] of facturas) {
+            const pagos = pagosPorFactura.get(uuid) ?? [];
+            pagosPorFactura.delete(uuid);
+
+            const pagado = pagos.reduce((suma, p) => suma + p.imp_pagado, 0);
+            let badge;
+            if (!pagos.length) {
+                badge = '<span class="badge badge-err">✗ Sin pago</span>';
+            } else if (pagado >= factura.total - TOLERANCIA) {
+                badge = '<span class="badge badge-ok">✓ Pagada</span>';
+                pagadas++;
             } else {
-                rows += `
-                    <tr>
-                        <td><span class="badge badge-err">✗ Sin pago</span></td>
-                        <td>${factura.archivo}</td>
-                        <td class="sin-match">Sin complemento</td>
-                        <td class="uuid" title="${uuid}">${uuid}</td>
-                        <td class="num">${factura.fecha?.slice(0,10)}</td>
-                        <td class="num">$${factura.total}</td>
-                        <td class="sin-match">—</td>
-                        <td class="sin-match">—</td>
-                    </tr>`;
+                badge = '<span class="badge badge-warn">◐ Parcial</span>';
+                parciales++;
             }
+
+            const archivosPago = [...new Set(pagos.map(p => p.archivo))].map(esc).join(", ");
+            const ultimaFechaPago = pagos.map(p => p.fecha_pago).filter(Boolean).sort().at(-1);
+
+            rows += `
+                <tr>
+                    <td class="col-estado">${badge}</td>
+                    <td class="col-factura">${esc(factura.archivo)}</td>
+                    <td class="col-complemento ${pagos.length ? "" : "sin-match"}">${archivosPago || "Sin complemento"}</td>
+                    <td class="col-uuid uuid" title="${esc(uuid)}">${esc(uuid)}</td>
+                    <td class="col-ffactura num">${esc(factura.fecha?.slice(0, 10))}</td>
+                    <td class="col-total num">${fmtMoneda.format(factura.total)}</td>
+                    <td class="col-fpago num ${ultimaFechaPago ? "" : "sin-match"}">${ultimaFechaPago ? esc(ultimaFechaPago.slice(0, 10)) : "—"}</td>
+                    <td class="col-importe num ${pagos.length ? "" : "sin-match"}">${pagos.length ? fmtMoneda.format(pagado) : "—"}</td>
+                </tr>`;
         }
+
+        const avisosHtml = avisos.length ? `
+            <div class="warnings">
+                <strong>Avisos</strong>
+                <ul>${avisos.map(a => `<li>${esc(a)}</li>`).join("")}</ul>
+            </div>` : "";
+
+        const sinPago = facturas.size - pagadas - parciales;
+        const summaryHtml = `
+            <div class="summary">
+                <span class="pill">${facturas.size} facturas</span>
+                <span class="pill pill-ok">✓ ${pagadas} pagadas</span>
+                ${parciales ? `<span class="pill pill-warn">◐ ${parciales} parciales</span>` : ""}
+                <span class="pill pill-err">✗ ${sinPago} sin pago</span>
+            </div>`;
+
         const togglesHtml = COLS.map(c =>
             `<label>
-                <input type="checkbox" checked data-col="${c.idx}">
+                <input type="checkbox" checked data-col="${c.key}">
                 ${c.label}
             </label>`
         ).join("");
 
-        const sinComplemento = totalFacturas - conComplemento;
+        // Lo que quedó en pagosPorFactura no cruzó con ninguna factura cargada
+        let huerfanosHtml = "";
+        if (pagosPorFactura.size) {
+            let huerfanoRows = "";
+            let nHuerfanos = 0;
+            for (const [uuid, pagos] of pagosPorFactura) {
+                for (const p of pagos) {
+                    nHuerfanos++;
+                    huerfanoRows += `
+                        <tr>
+                            <td>${esc(p.archivo)}</td>
+                            <td class="uuid" title="${esc(uuid)}">${esc(uuid)}</td>
+                            <td class="num">${p.fecha_pago ? esc(p.fecha_pago.slice(0, 10)) : "—"}</td>
+                            <td class="num">${fmtMoneda.format(p.imp_pagado)}</td>
+                        </tr>`;
+                }
+            }
+            huerfanosHtml = `
+                <h2 class="section-label">Complementos sin factura (${nHuerfanos})</h2>
+                <div class="table-card">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Complemento</th>
+                                <th>UUID relacionado</th>
+                                <th>Fecha pago</th>
+                                <th>Importe</th>
+                            </tr>
+                        </thead>
+                        <tbody>${huerfanoRows}</tbody>
+                    </table>
+                </div>`;
+        }
+
         resultado.innerHTML = `
-            <div class="summary">
-                <span class="pill">${totalFacturas} facturas</span>
-                <span class="pill pill-ok">✓ ${conComplemento} con complemento</span>
-                <span class="pill pill-err">✗ ${sinComplemento} sin complemento</span>
-            </div>
+            ${avisosHtml}
+            ${summaryHtml}
             <details id="col-toggles">
                 <summary>Columnas visibles</summary>
                 <div>${togglesHtml}</div>
@@ -137,30 +230,22 @@ async function cruzar() {
             <div class="table-card">
                 <table id="tabla-resultado">
                     <thead>
-                        <tr>
-                            <th>Estado</th>
-                            <th>Factura</th>
-                            <th>Complemento</th>
-                            <th>UUID</th>
-                            <th>Fecha factura</th>
-                            <th>Total</th>
-                            <th>Fecha pago</th>
-                            <th>Importe pagado</th>
-                        </tr>
+                        <tr>${COLS.map(c => `<th class="col-${c.key}">${c.label}</th>`).join("")}</tr>
                     </thead>
                     <tbody>${rows}</tbody>
                 </table>
-            </div>`;
+            </div>
+            ${huerfanosHtml}`;
 
         document.querySelectorAll("#col-toggles input[data-col]").forEach(cb => {
             cb.addEventListener("change", () => {
                 document.getElementById("tabla-resultado")
-                    .classList.toggle(`hide-col-${cb.dataset.col}`, !cb.checked);
+                    .classList.toggle(`hide-${cb.dataset.col}`, !cb.checked);
             });
         });
 
     } catch (e) {
-        resultado.innerHTML = `<p class="error-msg">Error: ${e.message}</p>`;
+        resultado.innerHTML = `<p class="error-msg">Error: ${esc(e.message)}</p>`;
     }
 }
 
@@ -191,3 +276,4 @@ function setupDropzone(inputId) {
 
 setupDropzone("facturas");
 setupDropzone("complementos");
+document.getElementById("btn-cruzar").addEventListener("click", cruzar);
