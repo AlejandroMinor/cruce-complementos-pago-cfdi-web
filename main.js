@@ -62,7 +62,7 @@ async function cruzar() {
     const filesComplementos = document.getElementById("complementos").files;
 
     if (!filesFacturas.length || !filesComplementos.length) {
-        resultado.innerHTML = '<p class="error">Selecciona archivos en ambas zonas.</p>';
+        resultado.innerHTML = '<p class="error-msg">Selecciona archivos en ambas zonas.</p>';
         return;
     }
 
@@ -85,29 +85,32 @@ async function cruzar() {
         ];
 
         let rows = "";
+        let conComplemento = 0;
+        const totalFacturas = Object.keys(facturas).length;
         for (const [uuid, factura] of Object.entries(facturas)) {
             const complemento = complementos[uuid];
             if (complemento) {
+                conComplemento++;
                 rows += `
-                    <tr class="row-ok">
-                        <td class="estado-ok">✓</td>
+                    <tr>
+                        <td><span class="badge badge-ok">✓ Pagada</span></td>
                         <td>${factura.archivo}</td>
                         <td>${complemento.archivo}</td>
-                        <td class="uuid" >${uuid}</td>
-                        <td>${factura.fecha?.slice(0,10)}</td>
-                        <td>$${factura.total}</td>
-                        <td>${complemento.fecha?.slice(0,10)}</td>
-                        <td>$${complemento.imp_pagado}</td>
+                        <td class="uuid" title="${uuid}">${uuid}</td>
+                        <td class="num">${factura.fecha?.slice(0,10)}</td>
+                        <td class="num">$${factura.total}</td>
+                        <td class="num">${complemento.fecha?.slice(0,10)}</td>
+                        <td class="num">$${complemento.imp_pagado}</td>
                     </tr>`;
             } else {
                 rows += `
-                    <tr class="row-error">
-                        <td class="estado-error">✗</td>
+                    <tr>
+                        <td><span class="badge badge-err">✗ Sin pago</span></td>
                         <td>${factura.archivo}</td>
                         <td class="sin-match">Sin complemento</td>
-                        <td class="uuid" >${uuid}</td>
-                        <td>${factura.fecha?.slice(0,10)}</td>
-                        <td>$${factura.total}</td>
+                        <td class="uuid" title="${uuid}">${uuid}</td>
+                        <td class="num">${factura.fecha?.slice(0,10)}</td>
+                        <td class="num">$${factura.total}</td>
                         <td class="sin-match">—</td>
                         <td class="sin-match">—</td>
                     </tr>`;
@@ -120,16 +123,22 @@ async function cruzar() {
             </label>`
         ).join("");
 
+        const sinComplemento = totalFacturas - conComplemento;
         resultado.innerHTML = `
-            <details id="col-toggles" open>
+            <div class="summary">
+                <span class="pill">${totalFacturas} facturas</span>
+                <span class="pill pill-ok">✓ ${conComplemento} con complemento</span>
+                <span class="pill pill-err">✗ ${sinComplemento} sin complemento</span>
+            </div>
+            <details id="col-toggles">
                 <summary>Columnas visibles</summary>
                 <div>${togglesHtml}</div>
             </details>
-            <figure>
+            <div class="table-card">
                 <table id="tabla-resultado">
                     <thead>
                         <tr>
-                            <th></th>
+                            <th>Estado</th>
                             <th>Factura</th>
                             <th>Complemento</th>
                             <th>UUID</th>
@@ -141,7 +150,7 @@ async function cruzar() {
                     </thead>
                     <tbody>${rows}</tbody>
                 </table>
-            </figure>`;
+            </div>`;
 
         document.querySelectorAll("#col-toggles input[data-col]").forEach(cb => {
             cb.addEventListener("change", () => {
@@ -151,6 +160,34 @@ async function cruzar() {
         });
 
     } catch (e) {
-        resultado.innerHTML = `<p class="error">Error: ${e.message}</p>`;
+        resultado.innerHTML = `<p class="error-msg">Error: ${e.message}</p>`;
     }
 }
+
+function setupDropzone(inputId) {
+    const input    = document.getElementById(inputId);
+    const dropzone = document.querySelector(`label[for="${inputId}"]`);
+    const counter  = document.getElementById(`${inputId}-count`);
+
+    const updateCount = () => {
+        const n = input.files.length;
+        counter.textContent = n === 1 ? "1 archivo" : `${n} archivos`;
+        counter.classList.toggle("has-files", n > 0);
+    };
+
+    input.addEventListener("change", updateCount);
+    dropzone.addEventListener("dragover", e => {
+        e.preventDefault();
+        dropzone.classList.add("drag-over");
+    });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag-over"));
+    dropzone.addEventListener("drop", e => {
+        e.preventDefault();
+        dropzone.classList.remove("drag-over");
+        input.files = e.dataTransfer.files;
+        updateCount();
+    });
+}
+
+setupDropzone("facturas");
+setupDropzone("complementos");
